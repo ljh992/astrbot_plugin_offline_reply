@@ -1,0 +1,11 @@
+name: astrbot_plugin_offline_reply
+display_name: 断线私聊补发
+short_desc: 断线重连后自动拉取并回复断线期间的私聊消息
+desc: 监听 NapCat 与 AstrBot 的 WebSocket 连接，断线重连后通过 NapCat 的 get_friend_msg_history 扩展 API 拉取断线期间的私聊历史消息，筛选出未回复的消息并注入 AstrBot，让机器人像正常收到消息一样逐条回复。支持文字、图片、语音、视频、文件等消息类型。仅支持 aiocqhttp（OneBot v11 / NapCat）平台。
+help: 无需指令。插件自动监听连接，断线重连后自动补发私聊消息。可在插件配置中调整 history_count（每次拉取的历史消息条数）。
+version: 0.1.0
+author: ljh992
+repo: https://github.com/ljh992/astrbot_plugin_offline_reply
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - aiocqhttp
