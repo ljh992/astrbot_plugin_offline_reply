@@ -6,13 +6,26 @@
 """
 
 import asyncio
+import os
 import time
 
 from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import File, Image, Plain, Record, Video
 from astrbot.api.star import Context, Star, register
 from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
 from astrbot.core.platform.message_type import MessageType
+
+_DEBUG_LOG = os.path.join(os.path.dirname(__file__), "debug.log")
+
+
+def _dbg(msg: str) -> None:
+    """把运行情况直接写到插件目录下，方便排查（WebUI 日志抓不到 loguru 输出时用）。"""
+    try:
+        with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 
 
 @register(
@@ -36,6 +49,37 @@ class OfflineReplyPlugin(Star):
         self._seen_msg_ids: set[str] = set()
         self._seen_max = 500
         self._find_platform()
+        logger.info(
+            f"[offline_reply] 插件已加载：adapter={'ok' if self.adapter else '未找到'} "
+            f"client={'ok' if self.client else '未找到'}"
+        )
+        _dbg(f"加载完成 adapter={'ok' if self.adapter else '未找到'} client={'ok' if self.client else '未找到'}")
+        if self.client is None:
+            # AstrBot 刚启动时平台往往还没初始化，起个后台任务等它
+            try:
+                asyncio.create_task(self._retry_find_platform())
+            except Exception as e:
+                _dbg(f"启动重试任务失败: {e}")
+
+    async def _retry_find_platform(self) -> None:
+        """AstrBot 启动早期拿不到适配器，隔一秒试一次，最多试 120 次。"""
+        for _ in range(120):
+            await asyncio.sleep(1)
+            if self.client is not None:
+                return
+            self._find_platform()
+            if self.client is not None:
+                _dbg("延迟找到 aiocqhttp 适配器")
+                logger.info("[offline_reply] 延迟找到 aiocqhttp 适配器")
+                return
+        _dbg("等了两分钟还是没找到适配器")
+
+    @filter.command("offline_test")
+    async def offline_test(self, event: AstrMessageEvent):
+        """发 /offline_test 看插件有没有加载成功。"""
+        yield event.plain_result(
+            f"offline_reply 在线，adapter={'ok' if self.adapter else '无'}，client={'ok' if self.client else '无'}"
+        )
 
     def _find_platform(self) -> None:
         try:
@@ -61,13 +105,24 @@ class OfflineReplyPlugin(Star):
 
         except Exception as e:
             logger.error(f"[offline_reply] 注册连接回调失败: {e}")
+        else:
+            logger.info("[offline_reply] 已注册 WebSocket 连接回调")
+            _dbg("已注册 WebSocket 连接回调")
 
     async def _handle_connect(self, event) -> None:
+        _dbg(f"收到连接事件 busy={self._busy}")
         if self.adapter is None or self.client is None or self._busy:
+            _dbg("跳过：adapter/client 为空或正在处理")
             return
         self._busy = True
         try:
             now = int(time.time())
+            # 插件重载会叠加多个连接回调，同一次连接事件只处理一遍
+            last_run = await self.get_kv_data("last_run_ts", 0) or 0
+            if abs(now - int(last_run)) < 5:
+                _dbg("重复的连接事件，跳过")
+                return
+            await self.put_kv_data("last_run_ts", now)
             try:
                 sid = getattr(event, "self_id", None)
                 if sid:
@@ -78,6 +133,7 @@ class OfflineReplyPlugin(Star):
             last_online = await self.get_kv_data("last_online", None)
             # 先记录本次在线时间，再处理
             await self.put_kv_data("last_online", now)
+            _dbg(f"last_online={last_online} now={now}")
 
             if last_online is None:
                 logger.info("[offline_reply] 首次连接，记录基线时间，不补发")
@@ -103,6 +159,7 @@ class OfflineReplyPlugin(Star):
 
             if total:
                 logger.info(f"[offline_reply] 已补发 {total} 条断线期间私聊消息")
+            _dbg(f"本轮结束 total={total}")
         except Exception as e:
             logger.exception(f"[offline_reply] 重连处理异常: {e}")
         finally:
